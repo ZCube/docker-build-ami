@@ -1,5 +1,23 @@
 #!/usr/bin/env python
-
+#https://raw.githubusercontent.com/mickep76/docker-build-ami/master/scripts/docker-build-ami
+#
+#   docker-build-ami - Expose hardware info through HTTP
+#
+#   Copyright (c) 2013 Michael Persson
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#  
+#  
 import argparse
 import ConfigParser
 import logging
@@ -27,6 +45,7 @@ def check_port(host, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.connect((host, 22))
+        s.settimeout(15)
         s.shutdown(socket.SHUT_RDWR)
         s.close()
         return True
@@ -84,13 +103,13 @@ def parse_dockerfile(ssh, fn):
                 continue
 
             # Environment variable
-            elif re.match('^ENV +', line, re.IGNORECASE):
-                op, key, val = re.split(' +', line, 2)
+            elif re.match('^ENV\s+', line, re.IGNORECASE):
+                op, key, val = re.split('\s+', line, 2)
                 env += '%s="%s"; ' % (key, val)
 
             # Run command
-            elif re.match('^RUN +', line, re.IGNORECASE):
-                op, cmd = re.split(' +', line, 1)
+            elif re.match('^RUN\s+', line, re.IGNORECASE):
+                op, cmd = re.split('\s+', line, 1)
                 if re.match('.*\\\s*$', line):
                     mline = True
                 else:
@@ -103,8 +122,8 @@ def parse_dockerfile(ssh, fn):
                     step += 1
 
             # Copy command
-            elif re.match('^COPY +', line, re.IGNORECASE):
-                op, src, dst = re.split(' +', line, 2)
+            elif re.match('^COPY\s+', line, re.IGNORECASE):
+                op, src, dst = re.split('\s+', line, 2)
                 print 'Step %s : COPY %s %s' % (step, src, dst)
                 if skip:
                     print color.DARK_GREY + 'Skipping for AWS...' + color.CLEAR + '\n'
@@ -114,8 +133,8 @@ def parse_dockerfile(ssh, fn):
                 step += 1
 
             # Add command
-            elif re.match('ADD +', line, re.IGNORECASE):
-                op, src, dst = re.split(' +', line, 2)
+            elif re.match('ADD\s+', line, re.IGNORECASE):
+                op, src, dst = re.split('\s+', line, 2)
                 print 'Step %s : ADD %s %s' % (step, src, dst)
                 if skip:
                     print color.DARK_GREY + 'Skipping for AWS...' + color.CLEAR + '\n'
@@ -137,6 +156,8 @@ parser.add_argument('-s', '--subnet-id', help='AWS subnet id')
 parser.add_argument('-n', '--image-name', help='Target AMI image name')
 parser.add_argument('-i', '--image-id', help='Source AMI image ID')
 parser.add_argument('-u', '--image-user', help='AMI image user')
+parser.add_argument('-g', '--sg_id', help='Security Group')
+
 args = parser.parse_args()
 
 # Create formatter
@@ -174,6 +195,7 @@ config.set('main', 'image_id', 'ami-e4ff5c93')
 config.set('main', 'image_user', 'centos')
 config.set('main', 'aws_access_key_id', None)
 config.set('main', 'aws_secret_access_key', None)
+config.set('main', 'sg_id', 'devel-1')
 
 # Load config
 cfile = None
@@ -191,6 +213,10 @@ elif isfile('/etc/docker-build-ami.conf'):
 if cfile and isfile(cfile):
     logger.info("Loading config file: {0}".format(cfile))
     config.read(cfile)
+
+sg_id = config.get('main', 'sg_id')
+if args.sg_id:
+    sg_id = args.sg_id
 
 region = config.get('main', 'region')
 if args.region:
@@ -244,7 +270,7 @@ except:
 key_pair = ec2.create_key_pair(key_name)
 key_pair.save(tmp_dir)
 
-reservation = ec2.run_instances(ami_id, key_name=key_name, instance_type=instance_type, subnet_id=subnet_id)
+reservation = ec2.run_instances(ami_id, key_name=key_name, instance_type=instance_type, subnet_id=subnet_id, security_group_ids=[sg_id])
 
 for r in ec2.get_all_instances():
     if r.id == reservation.id:
@@ -267,7 +293,9 @@ while instance.state != 'running':
 
 stdout.write('\nWaiting for SSH to become ready.')
 stdout.flush()
-while not check_port(instance.private_ip_address, 22):
+while True: 
+    if check_port(instance.private_ip_address, 22):
+	    break
     stdout.write('.')
     stdout.flush()
     time.sleep(5)
